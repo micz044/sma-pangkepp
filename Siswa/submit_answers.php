@@ -1,48 +1,106 @@
 <?php
 session_start();
+
 require_once '../koneksi.php';
 
-// Ambil ID siswa dari sesi
-$user_id = $_SESSION['user_id']; // Pastikan user_id disimpan dalam sesi
+// Periksa apakah pengguna sudah login
+if (!isset($_SESSION['user_id'])) {
+    header("Location: login.php");
+    exit;
+}
 
-// Query untuk mengambil ID siswa
-$sql = "SELECT id FROM students WHERE user_id = ?";
-$stmt = $conn->prepare($sql);
-$stmt->bind_param('i', $user_id);
+// Ambil student_id berdasarkan user_id
+$user_id = $_SESSION['user_id'];
+$student_id_sql = "SELECT id FROM students WHERE user_id = ?";
+$stmt = $conn->prepare($student_id_sql);
+$stmt->bind_param("i", $user_id);
 $stmt->execute();
-$result = $stmt->get_result();
-$student = $result->fetch_assoc();
+$student_id_result = $stmt->get_result();
+$student_id = $student_id_result->fetch_assoc()['id'];
 
-if ($student) {
-    $student_id = $student['id'];
-} else {
-    die("ID siswa tidak ditemukan.");
-}
+// Inisialisasi variabel untuk total nilai dan total soal
+$total_nilai = 0;
+$total_soal = 0;
 
-// Ambil data dari form
-$task_id = isset($_POST['task_id']) ? $_POST['task_id'] : null;
-$student_name = isset($_POST['student_name']) ? $_POST['student_name'] : '';
-$student_class = isset($_POST['student_class']) ? $_POST['student_class'] : '';
+// Proses setiap jawaban
+foreach ($_POST as $key => $value) {
+    if (strpos($key, 'question_') === 0) {
+        $soal_id = str_replace('question_', '', $key);
 
-// Proses upload file
-$upload_dir = 'uploads/'; // Sesuaikan dengan direktori upload Anda
-$file_path = $upload_dir . basename($_FILES['file']['name']);
+        // Ambil jawaban benar dan rekomendasi_id dari tabel soal_rekomendasi
+        $sql = "SELECT jawaban_benar, rekomendasi_id FROM soal_rekomendasi WHERE id = ?";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("i", $soal_id);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $row = $result->fetch_assoc();
 
-if (move_uploaded_file($_FILES['file']['tmp_name'], $file_path)) {
-    // Query untuk menyimpan tugas
-    $sql = "INSERT INTO kumpul_tugas (task_id, student_name, student_class, file_path, submission_date, siswa_id) VALUES (?, ?, ?, ?, NOW(), ?)";
-    $stmt = $conn->prepare($sql);
-    $stmt->bind_param('isssi', $task_id, $student_name, $student_class, $file_path, $student_id);
+        // Hitung nilai
+        $nilai = ($value === $row['jawaban_benar']) ? 100.00 : 0.00;
+        $total_nilai += $nilai;
+        $total_soal++;
 
-    if ($stmt->execute()) {
-        echo "Tugas berhasil disubmit!";
-    } else {
-        echo "Gagal menyimpan tugas: " . $stmt->error;
+        // Simpan jawaban, nilai, dan rekomendasi_id ke dalam tabel nilai_siswa
+        $sql = "
+            INSERT INTO nilai_siswa (siswa_id, soal_id, jawaban_siswa, nilai, tanggal, rekomendasi_id)
+            VALUES (?, ?, ?, ?, CURDATE(), ?)
+            ON DUPLICATE KEY UPDATE jawaban_siswa = VALUES(jawaban_siswa), nilai = VALUES(nilai)
+        ";
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param("iissi", $student_id, $soal_id, $value, $nilai, $row['rekomendasi_id']);
+        $stmt->execute();
     }
-} else {
-    echo "Gagal mengupload file.";
 }
 
-$stmt->close();
+// Hitung nilai akhir dalam rentang 0 hingga 100
+$nilai_akhir = ($total_soal > 0) ? ($total_nilai / $total_soal) : 0;
+$nilai_akhir = min($nilai_akhir, 100); // Batasi nilai maksimal hingga 100
+
+// Perbarui nilai akhir untuk setiap rekomendasi di tabel nilai_siswa
+$sql = "UPDATE nilai_siswa SET recommendation_score = ? WHERE siswa_id = ? AND rekomendasi_id = ?";
+$stmt = $conn->prepare($sql);
+$stmt->bind_param("dii", $nilai_akhir, $student_id, $row['rekomendasi_id']);
+$stmt->execute();
+
+// Tutup koneksi
 $conn->close();
 ?>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terima Kasih</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: 'Roboto', sans-serif;
+        }
+        .message-container {
+            text-align: center;
+        }
+        .message-container h1 {
+            color: #4CAF50;
+        }
+    </style>
+</head>
+<body>
+    <div class="message-container">
+        <h1>Terima kasih telah mengisi jawaban!</h1>
+        <p>Jawaban Anda telah berhasil dikirim.</p>
+        <p>Nilai keseluruhan Anda adalah: <?php echo number_format($nilai_akhir, 2); ?> / 100</p>
+        <button onclick="redirectToRecommendations()">Kembali ke Halaman Rekomendasi</button>
+    </div>
+    <script>
+        function redirectToRecommendations() {
+            window.location.href = 'recommendations.php'; // Ganti dengan URL halaman rekomendasi Anda
+        }
+    </script>
+</body>
+</html>
